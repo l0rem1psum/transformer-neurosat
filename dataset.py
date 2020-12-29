@@ -24,4 +24,7 @@ class SatProblemDataSet(torch.utils.data.Dataset):
         x = np.zeros([problem.n_lits, problem.n_clauses], dtype=np.float64)
         for i in problem.L_unpack_indices:
             x[i[0], i[1]] = 1
-        return torch.tensor(x), problem.is_sat
+        y = list()
+        for i in problem.is_sat:
+            y.append(float(i))
+        return torch.tensor(x), torch.tensor(y)
