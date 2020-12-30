@@ -5,4 +5,4 @@ cd PyMiniSolvers
 make
 cd ..
 
-mkdir data dimacs snapshots
+mkdir data snapshots
