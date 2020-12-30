@@ -1,3 +1,4 @@
 .idea/
-PyMiniSolvers/
 .ipynb_checkpoints/
+data/
+PyMiniSolvers/
