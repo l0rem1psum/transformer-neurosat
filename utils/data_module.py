@@ -1,14 +1,17 @@
 import argparse
+import json
 import os
 import pickle
 import random
-import time
+import sys
+import uuid
 
 import numpy as np
 import pytorch_lightning as pl
 import torch
 from tqdm import tqdm
 
+sys.path.append(os.path.abspath('.'))
 import PyMiniSolvers.minisolvers as minisolvers
 from utils.problem import Problem
 
@@ -196,70 +199,99 @@ class SATDataModule(pl.LightningDataModule):
     __UNSAT_DIMACS_FILENAME_FORMAT = "{}/sr_n={:04d}_pk2={:.2f}_pg={:.2f}_t={}_sat=1.dimacs"
     __STAGES = ["train", "test"]
 
-    def __init__(self, n_pairs, min_n, max_n, p_k_2, p_geo, data_dir, max_nodes_per_batch, one):
+    def __init__(self, data_dir, n_pairs=50, min_n=5, max_n=10, p_k_2=0.3, p_geo=0.4, max_nodes_per_batch=60000, one=1):
         super(SATDataModule, self).__init__()
-        self.timestamp = str(int(time.time()))
+        self.uuid = uuid.uuid4().hex[:8]
+
+        self.data_dir = data_dir
+        self.dimacs_dir = os.path.join(data_dir, self.uuid, "dimacs")
+        self.pickle_dir = os.path.join(data_dir, self.uuid, "pickle")
+
+        self.requires_regen = None
+        if os.path.isdir(data_dir):
+            data_dir_content = os.listdir(data_dir)
+            self.requires_regen = len(data_dir_content) != 3 or not all(
+                [content in ["dimacs", "pickle", "parameters.json"] for content in data_dir_content])
+        else:
+            self.requires_regen = True
+
         self.n_pairs = n_pairs
         self.min_n = min_n
         self.max_n = max_n
         self.p_k_2 = p_k_2
         self.p_geo = p_geo
-        self.data_dir = data_dir
         self.max_nodes_per_batch = max_nodes_per_batch
         self.one = one
-        self.dimacs_dir = os.path.join(data_dir, self.timestamp, "dimacs")
-        self.pickle_dir = os.path.join(data_dir, self.timestamp, "pickle")
 
-        for s in SATDataModule.__STAGES:
-            os.makedirs(os.path.join(self.dimacs_dir, s))
-            os.makedirs(os.path.join(self.pickle_dir, s))
+        if self.requires_regen:
+            for s in SATDataModule.__STAGES:
+                os.makedirs(os.path.join(self.dimacs_dir, s))
+                os.makedirs(os.path.join(self.pickle_dir, s))
+
+            config = {
+                "id": self.uuid,
+                "n_pairs": n_pairs,
+                "min_n": min_n,
+                "max_n": max_n,
+                "p_k_2": p_k_2,
+                "p_geo": p_geo,
+                "max_nodes_per_batch": max_nodes_per_batch,
+                "one": one
+            }
+            with open(os.path.join(self.data_dir, self.uuid, "parameters.json"), "w") as f:
+                json.dump(config, f)
+
+    def get_uuid(self):
+        return self.uuid
 
     def prepare_data(self):
-        for stage in SATDataModule.__STAGES:
-            print("generating {} stage dimacs data".format(stage))
-            for pair in tqdm(range(self.n_pairs)):
-                n_vars, iclauses, iclause_unsat, iclause_sat = gen_iclause_pair(
-                    self.min_n,
-                    self.max_n,
-                    self.p_k_2,
-                    self.p_geo
-                )
-
-                iclauses.append(iclause_unsat)
-                write_dimacs_to(
-                    n_vars,
-                    iclauses,
-                    SATDataModule.__UNSAT_DIMACS_FILENAME_FORMAT.format(
-                        os.path.join(self.dimacs_dir, stage),
-                        n_vars,
+        if self.requires_regen:
+            for stage in SATDataModule.__STAGES:
+                print("generating {} stage dimacs data".format(stage))
+                for pair in tqdm(range(self.n_pairs)):
+                    n_vars, iclauses, iclause_unsat, iclause_sat = gen_iclause_pair(
+                        self.min_n,
+                        self.max_n,
                         self.p_k_2,
-                        self.p_geo,
-                        pair
+                        self.p_geo
                     )
-                )
 
-                iclauses[-1] = iclause_sat
-                write_dimacs_to(
-                    n_vars,
-                    iclauses,
-                    SATDataModule.__SAT_DIMACS_FILENAME_FORMAT.format(
-                        os.path.join(self.dimacs_dir, stage),
+                    iclauses.append(iclause_unsat)
+                    write_dimacs_to(
                         n_vars,
-                        self.p_k_2,
-                        self.p_geo,
-                        pair
+                        iclauses,
+                        SATDataModule.__UNSAT_DIMACS_FILENAME_FORMAT.format(
+                            os.path.join(self.dimacs_dir, stage),
+                            n_vars,
+                            self.p_k_2,
+                            self.p_geo,
+                            pair
+                        )
                     )
-                )
+
+                    iclauses[-1] = iclause_sat
+                    write_dimacs_to(
+                        n_vars,
+                        iclauses,
+                        SATDataModule.__SAT_DIMACS_FILENAME_FORMAT.format(
+                            os.path.join(self.dimacs_dir, stage),
+                            n_vars,
+                            self.p_k_2,
+                            self.p_geo,
+                            pair
+                        )
+                    )
 
     def setup(self, stage=None):
-        for stage in SATDataModule.__STAGES:
-            print("pickling {} stage dimacs data".format(stage))
-            make_pickle_from_dimacs(
-                os.path.join(self.dimacs_dir, stage),
-                os.path.join(self.pickle_dir, stage),
-                self.max_nodes_per_batch,
-                self.one
-            )
+        if self.requires_regen:
+            for stage in SATDataModule.__STAGES:
+                print("pickling {} stage dimacs data".format(stage))
+                make_pickle_from_dimacs(
+                    os.path.join(self.dimacs_dir, stage),
+                    os.path.join(self.pickle_dir, stage),
+                    self.max_nodes_per_batch,
+                    self.one
+                )
 
     def train_dataloader(self):
         ds = SatProblemDataSet(os.path.join(self.pickle_dir, "train"))
@@ -279,9 +311,7 @@ if __name__ == "__main__":
     parser.add_argument('n_pairs', action='store', type=int)
     parser.add_argument('max_nodes_per_batch', action='store', type=int)
 
-    parser.add_argument('--run_dir', action='store', type=str)
-    parser.add_argument('--dimacs_dir', action='store', type=str)
-    parser.add_argument('--pickle_dir', action='store', type=str)
+    parser.add_argument('--data_dir', action='store', type=str)
 
     parser.add_argument('--min_n', action='store', dest='min_n', type=int, default=40)
     parser.add_argument('--max_n', action='store', dest='max_n', type=int, default=40)
@@ -292,22 +322,21 @@ if __name__ == "__main__":
     parser.add_argument('--py_seed', action='store', dest='py_seed', type=int, default=None)
     parser.add_argument('--np_seed', action='store', dest='np_seed', type=int, default=None)
 
-    parser.add_argument('--print_interval', action='store', dest='print_interval', type=int, default=100)
-
     parser.add_argument('--one', action='store', dest='one', type=int, default=0)
     parser.add_argument('--max_dimacs', action='store', dest='max_dimacs', type=int, default=None)
 
     opts = parser.parse_args()
 
     data_module = SATDataModule(
+        opts.data_dir,
         opts.n_pairs,
         opts.min_n,
         opts.max_n,
         opts.p_k_2,
         opts.p_geo,
-        "../data",
         opts.max_nodes_per_batch,
         opts.one
     )
     data_module.prepare_data()
     data_module.setup()
+    print("Finished generating dataset: {}".format(data_module.get_uuid()))

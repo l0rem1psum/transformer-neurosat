@@ -1,13 +1,8 @@
 #!/bin/bash
 
-DIMACS_DIR=data/dimacs
-PICKLE_DIR=data/pickle
+DATA_DIR=data
 
-rm -rf $DIMACS_DIR $PICKLE_DIR
-mkdir -p $DIMACS_DIR $PICKLE_DIR
-
-python3 data_module.py 100 60000 \
-  --dimacs_dir $DIMACS_DIR \
-  --pickle_dir $PICKLE_DIR \
+python3 utils/data_module.py 100 60000 \
+  --data_dir $DATA_DIR/ \
   --min_n 5 \
   --max_n 10

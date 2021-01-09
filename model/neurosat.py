@@ -6,9 +6,9 @@ import torch
 from model import MLP, LayerNormBasicLSTMCell, compute_loss
 
 
-class LightningNeuroSAT(pl.LightningModule):
+class NeuroSAT(pl.LightningModule):
     def __init__(self, d, n_msg_layers, n_vote_layers, n_rounds):
-        super(LightningNeuroSAT, self).__init__()
+        super(NeuroSAT, self).__init__()
 
         self.d = d
         self.n_rounds = n_rounds
