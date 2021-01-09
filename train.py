@@ -8,6 +8,7 @@ from pytorch_lightning.loggers import TensorBoardLogger
 
 from model import LightningNeuroSAT
 from utils import SatProblemDataSet
+from data_module import SATDataModule
 
 sys.path.append("utils")
 
@@ -21,7 +22,7 @@ logger = TensorBoardLogger(
 )
 trainer = pl.Trainer(
     min_epochs=1,
-    max_epochs=20,
+    max_epochs=50,
     logger=logger
 )
 
@@ -29,7 +30,18 @@ dm_opts = Namespace(
     run_dir="run"
 )
 
-ds = SatProblemDataSet("data/pickle/train/sr5-10")
-dl = torch.utils.data.DataLoader(ds, num_workers=4)
+# ds = SatProblemDataSet('data/1610177328/pickle/train')
+# dl = torch.utils.data.DataLoader(ds, num_workers=4)
 
-trainer.fit(model, train_dataloader=dl)
+data_module = SATDataModule(
+        100,
+        5,
+        10,
+        0.3,
+        0.4,
+        "data",
+        60000,
+        1
+    )
+
+trainer.fit(model, datamodule=data_module)

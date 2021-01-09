@@ -2,10 +2,12 @@ import argparse
 import os
 import pickle
 import random
-import uuid
+import time
 
 import numpy as np
 import pytorch_lightning as pl
+import torch
+from tqdm import tqdm
 
 import PyMiniSolvers.minisolvers as minisolvers
 from utils import SatProblemDataSet
@@ -122,7 +124,7 @@ def make_pickle_from_dimacs(dimacs_dir, pickle_dir, max_nodes_per_batch, one):
     filenames = os.listdir(dimacs_dir)
     filenames = sorted(filenames)
 
-    for filename in filenames:
+    for filename in tqdm(filenames):
         n_vars, iclauses = parse_dimacs("%s/%s" % (dimacs_dir, filename))
         n_clauses = len(iclauses)
         # n_cells = sum([len(iclause) for iclause in iclauses])
@@ -169,26 +171,33 @@ class SATDataModule(pl.LightningDataModule):
     __UNSAT_DIMACS_FILENAME_FORMAT = "{}/sr_n={:04d}_pk2={:.2f}_pg={:.2f}_t={}_sat=1.dimacs"
     __STAGES = ["train", "test"]
 
-    def __init__(self, opts):
+    def __init__(self, n_pairs, min_n, max_n, p_k_2, p_geo, data_dir, max_nodes_per_batch, one):
         super(SATDataModule, self).__init__()
-        self.uuid = uuid.uuid4()
-        if opts.run_dir is not None:
-            opts.__setattr__("dimacs_dir", os.path.join(opts.run_dir, self.uuid.hex[:8], "data/dimacs"))
-            opts.__setattr__("pickle_dir", os.path.join(opts.run_dir, self.uuid.hex[:8], "data/pickle"))
+        self.timestamp = str(int(time.time()))
+        self.n_pairs = n_pairs
+        self.min_n = min_n
+        self.max_n = max_n
+        self.p_k_2 = p_k_2
+        self.p_geo = p_geo
+        self.data_dir = data_dir
+        self.max_nodes_per_batch = max_nodes_per_batch
+        self.one = one
+        self.dimacs_dir = os.path.join(data_dir, self.timestamp, "dimacs")
+        self.pickle_dir = os.path.join(data_dir, self.timestamp, "pickle")
 
-        self.opts = opts
         for s in SATDataModule.__STAGES:
-            os.makedirs(os.path.join(self.opts.dimacs_dir, s))
-            os.makedirs(os.path.join(self.opts.pickle_dir, s))
+            os.makedirs(os.path.join(self.dimacs_dir, s))
+            os.makedirs(os.path.join(self.pickle_dir, s))
 
     def prepare_data(self):
         for stage in SATDataModule.__STAGES:
-            for pair in range(self.opts.n_pairs):
+            print("generating {} stage dimacs data".format(stage))
+            for pair in tqdm(range(self.n_pairs)):
                 n_vars, iclauses, iclause_unsat, iclause_sat = gen_iclause_pair(
-                    self.opts.min_n,
-                    self.opts.max_n,
-                    self.opts.p_k_2,
-                    self.opts.p_geo
+                    self.min_n,
+                    self.max_n,
+                    self.p_k_2,
+                    self.p_geo
                 )
 
                 iclauses.append(iclause_unsat)
@@ -196,10 +205,10 @@ class SATDataModule(pl.LightningDataModule):
                     n_vars,
                     iclauses,
                     SATDataModule.__UNSAT_DIMACS_FILENAME_FORMAT.format(
-                        os.path.join(self.opts.dimacs_dir, stage),
+                        os.path.join(self.dimacs_dir, stage),
                         n_vars,
-                        self.opts.p_k_2,
-                        self.opts.p_geo,
+                        self.p_k_2,
+                        self.p_geo,
                         pair
                     )
                 )
@@ -209,31 +218,34 @@ class SATDataModule(pl.LightningDataModule):
                     n_vars,
                     iclauses,
                     SATDataModule.__SAT_DIMACS_FILENAME_FORMAT.format(
-                        os.path.join(self.opts.dimacs_dir, stage),
+                        os.path.join(self.dimacs_dir, stage),
                         n_vars,
-                        self.opts.p_k_2,
-                        self.opts.p_geo,
+                        self.p_k_2,
+                        self.p_geo,
                         pair
                     )
                 )
 
     def setup(self, stage=None):
         for stage in SATDataModule.__STAGES:
+            print("pickling {} stage dimacs data".format(stage))
             make_pickle_from_dimacs(
-                os.path.join(self.opts.dimacs_dir, stage),
-                os.path.join(self.opts.pickle_dir, stage),
-                self.opts.max_nodes_per_batch,
-                self.opts.one
+                os.path.join(self.dimacs_dir, stage),
+                os.path.join(self.pickle_dir, stage),
+                self.max_nodes_per_batch,
+                self.one
             )
 
     def train_dataloader(self):
-        return SatProblemDataSet(self.opts.pickle_dir + "train")
+        ds = SatProblemDataSet(os.path.join(self.pickle_dir, "train"))
+        return torch.utils.data.DataLoader(ds, num_workers=4)
 
     def val_dataloader(self):
         pass
 
     def test_dataloader(self):
-        return SatProblemDataSet(self.opts.pickle_dir + "test")
+        ds = SatProblemDataSet(os.path.join(self.pickle_dir, "test"))
+        return torch.utils.data.DataLoader(ds, num_workers=4)
 
 
 if __name__ == "__main__":
@@ -262,6 +274,15 @@ if __name__ == "__main__":
 
     opts = parser.parse_args()
 
-    data_module = SATDataModule(opts)
+    data_module = SATDataModule(
+        opts.n_pairs,
+        opts.min_n,
+        opts.max_n,
+        opts.p_k_2,
+        opts.p_geo,
+        "data",
+        opts.max_nodes_per_batch,
+        opts.one
+    )
     data_module.prepare_data()
     data_module.setup()

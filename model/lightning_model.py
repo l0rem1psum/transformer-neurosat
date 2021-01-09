@@ -34,7 +34,7 @@ class LightningNeuroSAT(pl.LightningModule):
         torch.nn.init.normal_(self.C_init)
         torch.nn.init.zeros_(self.vote_bias)
 
-    def forward(self, x, n_batches=1):
+    def forward(self, x, n_batches):
         n_lits, n_clauses = x.size()
         n_vars = n_lits // 2
         denom = math.sqrt(self.d)
@@ -67,14 +67,16 @@ class LightningNeuroSAT(pl.LightningModule):
     def training_step(self, batch, batch_idx):
         x, y = batch
         x, y = x[0], y[0]
-        outputs = self(x.float())
+        outputs = self(x.float(), n_batches=len(y))
         torch.nn.utils.clip_grad_norm_(self.parameters(), 0.5)
         loss = compute_loss(outputs, y, self.parameters())
         self.log_dict(
             {
                 "train_loss": loss.item(),
                 "train_acc_step": self.accuracy(outputs > 0, y),
-            }
+            },
+            prog_bar=True,
+            on_step=True,
         )
         return loss
 
