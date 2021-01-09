@@ -1,8 +1,9 @@
-from model import MLP, LayerNormBasicLSTMCell, compute_loss
-from utils import repeat_end
-import torch
 import math
+
 import pytorch_lightning as pl
+import torch
+
+from model import MLP, LayerNormBasicLSTMCell, compute_loss
 
 
 class LightningNeuroSAT(pl.LightningModule):
@@ -15,13 +16,13 @@ class LightningNeuroSAT(pl.LightningModule):
         self.L_init = torch.nn.Parameter(torch.empty([1, d]))
         self.C_init = torch.nn.Parameter(torch.empty([1, d]))
 
-        self.LC_msg = MLP(d, repeat_end(d, n_msg_layers, d))
-        self.CL_msg = MLP(d, repeat_end(d, n_msg_layers, d))
+        self.LC_msg = MLP(d, [d for _ in range(n_msg_layers)] + [d])
+        self.CL_msg = MLP(d, [d for _ in range(n_msg_layers)] + [d])
 
         self.L_update = LayerNormBasicLSTMCell(2 * d, d)
         self.C_update = LayerNormBasicLSTMCell(d, d)
 
-        self.L_vote = MLP(d, repeat_end(d, n_vote_layers, 1))
+        self.L_vote = MLP(d, [d for _ in range(n_vote_layers)] + [1])
         self.vote_bias = torch.nn.Parameter(torch.empty([]))
 
         self._init_weight()
@@ -72,7 +73,7 @@ class LightningNeuroSAT(pl.LightningModule):
         loss = compute_loss(outputs, y, self.parameters())
         self.log_dict(
             {
-                "train_loss": loss.item(),
+                "train_loss_step": loss.item(),
                 "train_acc_step": self.accuracy(outputs > 0, y),
             },
             prog_bar=True,

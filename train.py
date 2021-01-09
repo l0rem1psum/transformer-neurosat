@@ -3,12 +3,10 @@ import sys
 from argparse import Namespace
 
 import pytorch_lightning as pl
-import torch
 from pytorch_lightning.loggers import TensorBoardLogger
 
 from model import LightningNeuroSAT
-from utils import SatProblemDataSet
-from data_module import SATDataModule
+from utils.data_module import SATDataModule
 
 sys.path.append("utils")
 
@@ -23,7 +21,8 @@ logger = TensorBoardLogger(
 trainer = pl.Trainer(
     min_epochs=1,
     max_epochs=50,
-    logger=logger
+    logger=logger,
+    log_every_n_steps=1
 )
 
 dm_opts = Namespace(
@@ -41,7 +40,7 @@ data_module = SATDataModule(
         0.4,
         "data",
         60000,
-        1
+        0
     )
 
 trainer.fit(model, datamodule=data_module)

@@ -1,6 +1,3 @@
-import numpy as np
-
-
 class ConfusionMatrix(object):
     def __init__(self):
         self.tn = 0

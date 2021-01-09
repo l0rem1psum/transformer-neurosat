@@ -10,8 +10,7 @@ import torch
 from tqdm import tqdm
 
 import PyMiniSolvers.minisolvers as minisolvers
-from utils import SatProblemDataSet
-from utils.mk_problem import Problem
+from utils.problem import Problem
 
 
 def generate_k_iclause(n, k):
@@ -166,6 +165,32 @@ def make_pickle_from_dimacs(dimacs_dir, pickle_dir, max_nodes_per_batch, one):
         pickle.dump(batches, f_dump)
 
 
+class SatProblemDataSet(torch.utils.data.Dataset):
+    def __init__(self, dirname):
+        super(SatProblemDataSet, self).__init__()
+
+        self.dirname = dirname
+        self.filenames = [dirname + "/" + f for f in os.listdir(dirname)]
+        self.problems = list()
+        for filename in self.filenames:
+            with open(filename, 'rb') as f:
+                problems = pickle.load(f)
+                self.problems.extend(problems)
+
+    def __len__(self):
+        return len(self.problems)
+
+    def __getitem__(self, idx):
+        problem = self.problems[idx]
+        x = np.zeros([problem.n_lits, problem.n_clauses], dtype=np.float64)
+        for i in problem.L_unpack_indices:
+            x[i[0], i[1]] = 1
+        y = list()
+        for i in problem.is_sat:
+            y.append(float(i))
+        return torch.tensor(x), torch.tensor(y)
+
+
 class SATDataModule(pl.LightningDataModule):
     __SAT_DIMACS_FILENAME_FORMAT = "{}/sr_n={:04d}_pk2={:.2f}_pg={:.2f}_t={}_sat=0.dimacs"
     __UNSAT_DIMACS_FILENAME_FORMAT = "{}/sr_n={:04d}_pk2={:.2f}_pg={:.2f}_t={}_sat=1.dimacs"
@@ -280,7 +305,7 @@ if __name__ == "__main__":
         opts.max_n,
         opts.p_k_2,
         opts.p_geo,
-        "data",
+        "../data",
         opts.max_nodes_per_batch,
         opts.one
     )
