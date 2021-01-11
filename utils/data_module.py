@@ -204,8 +204,6 @@ class SATDataModule(pl.LightningDataModule):
         self.uuid = uuid.uuid4().hex[:8]
 
         self.data_dir = data_dir
-        self.dimacs_dir = os.path.join(data_dir, self.uuid, "dimacs")
-        self.pickle_dir = os.path.join(data_dir, self.uuid, "pickle")
 
         self.requires_regen = None
         if os.path.isdir(data_dir):
@@ -224,6 +222,9 @@ class SATDataModule(pl.LightningDataModule):
         self.one = one
 
         if self.requires_regen:
+            self.dimacs_dir = os.path.join(data_dir, self.uuid, "dimacs")
+            self.pickle_dir = os.path.join(data_dir, self.uuid, "pickle")
+
             for s in SATDataModule.__STAGES:
                 os.makedirs(os.path.join(self.dimacs_dir, s))
                 os.makedirs(os.path.join(self.pickle_dir, s))
@@ -240,6 +241,9 @@ class SATDataModule(pl.LightningDataModule):
             }
             with open(os.path.join(self.data_dir, self.uuid, "parameters.json"), "w") as f:
                 json.dump(config, f)
+        else:
+            self.dimacs_dir = os.path.join(data_dir, "dimacs")
+            self.pickle_dir = os.path.join(data_dir, "pickle")
 
     def get_uuid(self):
         return self.uuid

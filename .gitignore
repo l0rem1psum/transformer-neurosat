@@ -2,7 +2,5 @@
 .ipynb_checkpoints/
 __pycache__/
 */__pycache__/
-data/
 PyMiniSolvers/
 lightning_logs/
-run/
