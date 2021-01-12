@@ -4,28 +4,22 @@ import time
 
 import pytorch_lightning as pl
 from pytorch_lightning.loggers import TensorBoardLogger
+from pytorch_lightning.callbacks import ProgressBar
 
 from model import NeuroSAT
-from utils.data_module import SATDataModule
+from utils import CnfDataModule
 
 sys.path.append("utils")
 
 run_dir = os.path.join('run', str(int(time.time())))
 os.makedirs(run_dir)
 
-data_module = SATDataModule(
-    "data/23a9bcc9/d5ddbb15",
-    50000,
-    10,
-    40,
-    0.3,
-    0.4,
-    20000,
-    0
-)
-print(data_module.get_uuid())
-
 model = NeuroSAT(128, 3, 3, 16)
+
+class LitProgressBar(ProgressBar):
+
+    def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx):
+        self.main_progress_bar.update(batch[1].shape[0])
 
 logger = TensorBoardLogger(
     save_dir=run_dir,
@@ -39,7 +33,9 @@ trainer = pl.Trainer(
     logger=logger,
     log_every_n_steps=1,
     default_root_dir=run_dir,
-    gpus=1
+    gpus=1,
+    callbacks=[LitProgressBar()]
 )
 
-trainer.fit(model, datamodule=data_module)
+datamodule = CnfDataModule("data", n_pairs=1000, one=True, max_nodes_per_batch=2000)
+trainer.fit(model, datamodule=datamodule)
