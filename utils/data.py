@@ -7,6 +7,7 @@ from typing import List, Tuple
 import numpy as np
 import pytorch_lightning as pl
 import torch
+from tqdm import tqdm
 
 sys.path.append(os.path.abspath('.'))
 import PyMiniSolvers.minisolvers as minisolvers
@@ -189,8 +190,8 @@ class CnfDataSet(torch.utils.data.IterableDataset):
                         f.write("%d " % x)
                     f.write("0\n")
 
-    def __len__(self):
-        return self.n_pairs * 2
+    # def __len__(self):
+    #     return self.n_pairs * 2
 
     def __iter__(self):
         if self.requires_generation and self.cnf_generator is not None:
@@ -253,23 +254,59 @@ class CnfDataModule(pl.LightningDataModule):
         self.p_geo = p_geo
         self.max_nodes_per_batch = max_nodes_per_batch
 
-        self.requires_generation = None
         self.uuid = None
 
     def prepare_data(self):
         # check if data of same parameter already exists
-        self.requires_generation = True
+        # warning: do not assign state in prepare_data()
         self.uuid = uuid.uuid4().hex[:8]
+
+        regen_train, regen_valid, regen_test = self._check_regeneration()
+        if regen_train:
+            self._generate_and_save("train", self.n_pairs)
+        if regen_valid:
+            self._generate_and_save("validation", int(self.n_pairs * 0.1))
+        if regen_test:
+            self._generate_and_save("test", int(self.n_pairs * 0.3))
+
+    def _check_regeneration(self):
+        return True, True, True
+
+    def _generate_and_save(self, kind: str, n_pairs: int):
+        data_dir = os.path.join(self.data_dir, self.uuid, kind)
+        os.makedirs(data_dir)
+
+        cnf_generator = CnfGenerator(True, self.min_n, self.max_n, self.p_k_2, self.p_geo, self.max_nodes_per_batch)
+        cnf_generator.set_n_pairs(n_pairs)
+
+        for i in tqdm(range(2 * n_pairs)):
+            minibatch = cnf_generator.generate_one_minibatch()
+            assert len(minibatch) == 1, "problems must be generated one by one"
+            n_vars, iclauses, is_sat = minibatch[0]
+            out_filename = '{}/sr_n={:04d}_pk2={:.2f}_pg={:.2f}_t={}_sat={}.dimacs'.format(
+                data_dir,
+                n_vars,
+                self.p_k_2,
+                self.p_geo,
+                i,
+                int(is_sat)
+            )
+            with open(out_filename, 'w') as f:
+                f.write("p cnf %d %d\n" % (n_vars, len(iclauses)))
+                for c in iclauses:
+                    for x in c:
+                        f.write("%d " % x)
+                    f.write("0\n")
+        assert not cnf_generator.generate_one_minibatch(), "all problems must be generated"
 
     def setup(self, stage=None):
         pass
 
     def train_dataloader(self):
         data_dir = os.path.join(self.data_dir, self.uuid, "train")
-        os.makedirs(data_dir)
         ds = CnfDataSet(
             data_dir=data_dir,
-            requires_generation=self.requires_generation,
+            requires_generation=False,
             one=self.one,
             n_pairs=self.n_pairs,
             min_n=self.min_n,
@@ -281,23 +318,34 @@ class CnfDataModule(pl.LightningDataModule):
         return torch.utils.data.DataLoader(ds, batch_size=None, collate_fn=self.collate_fn)
 
     def val_dataloader(self):
-        pass
-
-    def test_dataloader(self):
-        data_dir = os.path.join(self.data_dir, self.uuid, "test")
-        os.makedirs(data_dir)
+        data_dir = os.path.join(self.data_dir, self.uuid, "validation")
         ds = CnfDataSet(
             data_dir=data_dir,
-            requires_generation=self.requires_generation,
+            requires_generation=False,
             one=self.one,
-            n_pairs=self.n_pairs,
+            n_pairs=int(self.n_pairs * 0.1),
             min_n=self.min_n,
             max_n=self.max_n,
             p_k_2=self.p_k_2,
             p_geo=self.p_geo,
             max_nodes_per_batch=self.max_nodes_per_batch
         )
-        return torch.utils.data.DataLoader(ds, batch_size=None, collate_fn=self.collate_fn)
+        return torch.utils.data.DataLoader(ds, batch_size=None, collate_fn=self.collate_fn, num_workers=0)
+
+    def test_dataloader(self):
+        data_dir = os.path.join(self.data_dir, self.uuid, "test")
+        ds = CnfDataSet(
+            data_dir=data_dir,
+            requires_generation=False,
+            one=self.one,
+            n_pairs=int(self.n_pairs * 0.3),
+            min_n=self.min_n,
+            max_n=self.max_n,
+            p_k_2=self.p_k_2,
+            p_geo=self.p_geo,
+            max_nodes_per_batch=self.max_nodes_per_batch
+        )
+        return torch.utils.data.DataLoader(ds, batch_size=None, collate_fn=self.collate_fn, num_workers=0)
 
     @staticmethod
     def _ilit_to_var_sign(x: int):

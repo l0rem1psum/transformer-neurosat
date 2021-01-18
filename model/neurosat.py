@@ -2,6 +2,8 @@ import math
 
 import pytorch_lightning as pl
 import torch
+from pytorch_lightning.metrics import functional as FM
+
 
 from model import MLP, LayerNormBasicLSTMCell, compute_loss
 
@@ -28,7 +30,7 @@ class NeuroSAT(pl.LightningModule):
         self._init_weight()
 
         # Metrics
-        self.accuracy = pl.metrics.Accuracy()
+        self.train_accuracy = pl.metrics.Accuracy()
 
     def _init_weight(self):
         torch.nn.init.normal_(self.L_init)
@@ -41,10 +43,10 @@ class NeuroSAT(pl.LightningModule):
         denom = math.sqrt(self.d)
 
         L_state_h = (self.L_init / denom).repeat([n_lits, 1])
-        L_state_c = torch.zeros([n_lits, self.d]).cuda()
+        L_state_c = torch.zeros([n_lits, self.d])#.cuda()
 
         C_state_h = (self.C_init / denom).repeat([n_clauses, 1])
-        C_state_c = torch.zeros([n_clauses, self.d]).cuda()
+        C_state_c = torch.zeros([n_clauses, self.d])#.cuda()
 
         for i in range(self.n_rounds):
             LC_pre_msgs = self.LC_msg(L_state_h)
@@ -73,16 +75,44 @@ class NeuroSAT(pl.LightningModule):
         loss = compute_loss(outputs, y, self.parameters())
         self.log_dict(
             {
-                "train_loss_step": loss.item(),
-                "train_acc_step": self.accuracy(outputs > 0, y),
+                "train_loss": loss.item(),
+                "train_acc": self.train_accuracy(outputs > 0, y),
             },
             prog_bar=True,
             on_step=True,
+            on_epoch=True,
         )
         return loss
 
-    def training_epoch_end(self, outputs) -> None:
-        self.log('train_acc_epoch', self.accuracy.compute())
+    def validation_step(self, batch, batch_idx):
+        x, y = batch
+        outputs = self(x.float(), n_batches=len(y))
+        loss = compute_loss(outputs, y, self.parameters())
+        acc = FM.accuracy(outputs > 0, y)
+        self.log_dict(
+            {
+                "validation_loss": loss.item(),
+                "validation_acc": acc,
+            },
+            prog_bar=False,
+            on_step=True,
+            on_epoch=True,
+        )
+        return acc
+
+    def test_step(self, batch, batch_idx):
+        x, y = batch
+        outputs = self(x.float(), n_batches=len(y))
+        acc = FM.accuracy(outputs > 0, y)
+        self.log_dict(
+            {
+                "test_acc": acc,
+            },
+            prog_bar=False,
+            on_step=True,
+            on_epoch=True,
+        )
+        return acc
 
     def configure_optimizers(self):
         return torch.optim.Adam(self.parameters(), lr=1e-5, weight_decay=1e-10)
