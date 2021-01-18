@@ -43,10 +43,10 @@ class NeuroSAT(pl.LightningModule):
         denom = math.sqrt(self.d)
 
         L_state_h = (self.L_init / denom).repeat([n_lits, 1])
-        L_state_c = torch.zeros([n_lits, self.d])#.cuda()
+        L_state_c = torch.zeros([n_lits, self.d]).cuda()
 
         C_state_h = (self.C_init / denom).repeat([n_clauses, 1])
-        C_state_c = torch.zeros([n_clauses, self.d])#.cuda()
+        C_state_c = torch.zeros([n_clauses, self.d]).cuda()
 
         for i in range(self.n_rounds):
             LC_pre_msgs = self.LC_msg(L_state_h)
@@ -69,7 +69,6 @@ class NeuroSAT(pl.LightningModule):
 
     def training_step(self, batch, batch_idx):
         x, y = batch
-        # x, y = x[0], y[0]
         outputs = self(x.float(), n_batches=len(y))
         torch.nn.utils.clip_grad_norm_(self.parameters(), 0.5)
         loss = compute_loss(outputs, y, self.parameters())

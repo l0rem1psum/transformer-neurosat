@@ -2,6 +2,7 @@ import os
 import random
 import sys
 import uuid
+import json
 from typing import List, Tuple
 
 import numpy as np
@@ -238,7 +239,7 @@ class CnfDataSet(torch.utils.data.IterableDataset):
 
 class CnfDataModule(pl.LightningDataModule):
 
-    def __init__(self, data_dir, one: bool = True, n_pairs: int = 100,
+    def __init__(self, data_dir: str, one: bool = True, n_pairs: int = 100,
                  min_n: int = 2, max_n: int = 4,
                  p_k_2: float = 0.3, p_geo: float = 0.4,
                  max_nodes_per_batch: int = 20000):
@@ -255,13 +256,13 @@ class CnfDataModule(pl.LightningDataModule):
         self.max_nodes_per_batch = max_nodes_per_batch
 
         self.uuid = None
+        self.requires_regeneration = self._check_regeneration()
+        if all(self.requires_regeneration):
+            self.uuid = uuid.uuid4().hex[:8]
 
     def prepare_data(self):
         # check if data of same parameter already exists
-        # warning: do not assign state in prepare_data()
-        self.uuid = uuid.uuid4().hex[:8]
-
-        regen_train, regen_valid, regen_test = self._check_regeneration()
+        regen_train, regen_valid, regen_test = self.requires_regeneration
         if regen_train:
             self._generate_and_save("train", self.n_pairs)
         if regen_valid:
@@ -269,7 +270,41 @@ class CnfDataModule(pl.LightningDataModule):
         if regen_test:
             self._generate_and_save("test", int(self.n_pairs * 0.3))
 
-    def _check_regeneration(self):
+        parameters = {
+            "id": self.uuid,
+            "n_pairs": self.n_pairs,
+            "min_n": self.min_n,
+            "max_n": self.max_n,
+            "p_k_2": self.p_k_2,
+            "p_geo": self.p_geo,
+        }
+        with open(os.path.join(self.data_dir, self.uuid, "parameters.json"), "w") as f:
+            json.dump(parameters, f)
+
+    def _check_regeneration(self) -> Tuple[bool, bool, bool]:
+        # search for existing datasets
+        existing_data_dirs = os.listdir(self.data_dir)
+        for cur_dir in existing_data_dirs:
+            parameters_file = os.path.join(self.data_dir, cur_dir, "parameters.json")
+            try:
+                with open(parameters_file, "r") as fp:
+                    parameters = json.load(fp)
+                    n_pairs = parameters.get("n_pairs")
+                    min_n = parameters.get("min_n")
+                    max_n = parameters.get("max_n")
+                    p_k_2 = parameters.get("p_k_2")
+                    p_geo = parameters.get("p_geo")
+                    if n_pairs == self.n_pairs and min_n == self.min_n and max_n == self.max_n and p_k_2 == self.p_k_2 and p_geo == self.p_geo:
+                        # found satisfying dataset
+                        self.uuid = cur_dir
+                        modes = os.listdir(os.path.join(self.data_dir, cur_dir))
+                        return (
+                            "train" not in modes,
+                            "validation" not in modes,
+                            "test" not in modes
+                        )
+            except FileNotFoundError:
+                continue
         return True, True, True
 
     def _generate_and_save(self, kind: str, n_pairs: int):
@@ -337,7 +372,7 @@ class CnfDataModule(pl.LightningDataModule):
         ds = CnfDataSet(
             data_dir=data_dir,
             requires_generation=False,
-            one=self.one,
+            one=True,
             n_pairs=int(self.n_pairs * 0.3),
             min_n=self.min_n,
             max_n=self.max_n,
