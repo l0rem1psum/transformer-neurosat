@@ -11,6 +11,7 @@ from model import MLP, LayerNormBasicLSTMCell, compute_loss
 class NeuroSAT(pl.LightningModule):
     def __init__(self, d, n_msg_layers, n_vote_layers, n_rounds):
         super(NeuroSAT, self).__init__()
+        self.example_input_array = (torch.zeros(20, 35), torch.tensor(1)) # n_lits * n_clauses
 
         self.d = d
         self.n_rounds = n_rounds
@@ -43,10 +44,10 @@ class NeuroSAT(pl.LightningModule):
         denom = math.sqrt(self.d)
 
         L_state_h = (self.L_init / denom).repeat([n_lits, 1])
-        L_state_c = torch.zeros([n_lits, self.d]).cuda()
+        L_state_c = torch.zeros([n_lits, self.d])#.cuda()
 
         C_state_h = (self.C_init / denom).repeat([n_clauses, 1])
-        C_state_c = torch.zeros([n_clauses, self.d]).cuda()
+        C_state_c = torch.zeros([n_clauses, self.d])#.cuda()
 
         for i in range(self.n_rounds):
             LC_pre_msgs = self.LC_msg(L_state_h)
