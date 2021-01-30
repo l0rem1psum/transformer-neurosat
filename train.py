@@ -25,16 +25,16 @@ progress_bar = BatchAwareProgressBar()
 
 trainer = pl.Trainer(
     min_epochs=1,
-    max_epochs=10,
+    max_epochs=50,
     logger=logger,
     log_every_n_steps=1,
     default_root_dir=run_dir,
     val_check_interval=1.0,
-    gpus=1,
+    # gpus=1,
     callbacks=[progress_bar]
 )
 
-datamodule = CnfDataModule("data", n_pairs=10000, one=False, max_nodes_per_batch=10000, min_n=10, max_n=40)
+datamodule = CnfDataModule("data", n_pairs=2000, one=True, max_nodes_per_batch=10000, min_n=10, max_n=40)
 trainer.fit(model, datamodule=datamodule)
 
 # TODO: Save run config

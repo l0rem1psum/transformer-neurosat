@@ -5,7 +5,7 @@ import torch
 from pytorch_lightning.metrics import functional as FM
 
 
-from model import MLP, LayerNormBasicLSTMCell, compute_loss
+from model import MLP, compute_loss
 
 
 class NeuroSAT(pl.LightningModule):
@@ -21,8 +21,7 @@ class NeuroSAT(pl.LightningModule):
         self.LC_msg = MLP(d, [d for _ in range(n_msg_layers)] + [d])
         self.CL_msg = MLP(d, [d for _ in range(n_msg_layers)] + [d])
 
-        self.L_update = LayerNormBasicLSTMCell(2 * d, d)
-        self.C_update = LayerNormBasicLSTMCell(d, d)
+        self.transformer = torch.nn.Transformer(d_model = d, dim_feedforward=8)
 
         self.L_vote = MLP(d, [d for _ in range(n_vote_layers)] + [1])
         self.vote_bias = torch.nn.Parameter(torch.empty([]))
@@ -43,21 +42,32 @@ class NeuroSAT(pl.LightningModule):
         denom = math.sqrt(self.d)
 
         L_state_h = (self.L_init / denom).repeat([n_lits, 1])
-        L_state_c = torch.zeros([n_lits, self.d]).cuda()
-
+        # L_state_c = torch.zeros([n_lits, self.d]).cuda()
+        #
         C_state_h = (self.C_init / denom).repeat([n_clauses, 1])
-        C_state_c = torch.zeros([n_clauses, self.d]).cuda()
+        # C_state_c = torch.zeros([n_clauses, self.d]).cuda()
+        #
+        # for i in range(self.n_rounds):
+        #     LC_pre_msgs = self.LC_msg(L_state_h)
+        #     LC_msgs = x.t() @ LC_pre_msgs
+        #     C_state_h, C_state_c = self.C_update(LC_msgs, (C_state_h, C_state_c))
+        #
+        #     CL_pre_msgs = self.CL_msg(C_state_h)
+        #     CL_msgs = x @ CL_pre_msgs
+        #     xx = torch.cat([L_state_h[n_vars:n_lits, :], L_state_h[0:n_vars, :]], 0)
+        #     xxx = torch.cat([CL_msgs, xx], 1)
+        #     L_state_h, L_state_c = self.L_update(xxx, (L_state_h, L_state_c))
 
-        for i in range(self.n_rounds):
-            LC_pre_msgs = self.LC_msg(L_state_h)
-            LC_msgs = x.t() @ LC_pre_msgs
-            C_state_h, C_state_c = self.C_update(LC_msgs, (C_state_h, C_state_c))
+        LC_pre_msgs = self.LC_msg(L_state_h)
+        LC_msgs = x.t() @ LC_pre_msgs
 
-            CL_pre_msgs = self.CL_msg(C_state_h)
-            CL_msgs = x @ CL_pre_msgs
-            xx = torch.cat([L_state_h[n_vars:n_lits, :], L_state_h[0:n_vars, :]], 0)
-            xxx = torch.cat([CL_msgs, xx], 1)
-            L_state_h, L_state_c = self.L_update(xxx, (L_state_h, L_state_c))
+        CL_pre_msgs = self.CL_msg(C_state_h)
+        CL_msgs = x @ CL_pre_msgs
+        xx = torch.cat([L_state_h[n_vars:n_lits, :], L_state_h[0:n_vars, :]], 0)
+        xxx = torch.cat([CL_msgs, xx], 1)
+
+
+        L_state_h = self.transformer(LC_msgs.unsqueeze(1), CL_msgs.unsqueeze(1))
 
         all_votes = self.L_vote(L_state_h)
         all_votes_join = torch.cat([all_votes[0:n_vars], all_votes[n_vars:n_lits]], 1)
@@ -114,4 +124,5 @@ class NeuroSAT(pl.LightningModule):
         return acc
 
     def configure_optimizers(self):
-        return torch.optim.Adam(self.parameters(), lr=1e-5, weight_decay=1e-10)
+        return torch.optim.SGD(self.parameters(), lr=1e-5)
+        # return torch.optim.Adam(self.parameters(), lr=1e-6, weight_decay=1e-10)
