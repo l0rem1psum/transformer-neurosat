@@ -14,7 +14,7 @@ run_dir = os.path.join('run', str(int(time.time())))
 os.makedirs(run_dir)
 
 # model = NeuroSAT(128, 3, 3, 16)
-model = SimpleAttentionSat(16, 1)
+model = SimpleAttentionSat(128, 6)
 
 logger = TensorBoardLogger(
     save_dir=run_dir,

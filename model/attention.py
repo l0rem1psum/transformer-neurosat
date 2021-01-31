@@ -68,7 +68,7 @@ class SimpleAttentionSat(pl.LightningModule):
         #     combined_lit_attn_msg = torch.cat([lit_msg, flipped_lit_attn_msg], 0) # 2n_lits * 1 * d
         #     cls_msg, _ = self.lit_attn(cls_msg, combined_lit_attn_msg, combined_lit_attn_msg)  # n_clauses * 1 * d, ?
 
-        for _ in range(1):
+        for _ in range(8):
             for attn_layer in self.lit_attn:
                 lit_msg = (x @ self.lin1(lit_init)).unsqueeze(1)
                 # print(lit_msg.squeeze())
