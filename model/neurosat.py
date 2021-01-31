@@ -59,7 +59,7 @@ class NeuroSAT(pl.LightningModule):
             xx = torch.cat([L_state_h[n_vars:n_lits, :], L_state_h[0:n_vars, :]], 0)
             xxx = torch.cat([CL_msgs, xx], 1)
             L_state_h, L_state_c = self.L_update(xxx, (L_state_h, L_state_c))
-
+        print(L_state_h)
         all_votes = self.L_vote(L_state_h)
         all_votes_join = torch.cat([all_votes[0:n_vars], all_votes[n_vars:n_lits]], 1)
 

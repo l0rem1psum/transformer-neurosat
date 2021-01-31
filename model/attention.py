@@ -8,23 +8,31 @@ from model import MLP, LayerNormBasicLSTMCell, compute_loss
 
 
 class SimpleAttentionSat(pl.LightningModule):
-    def __init__(self, d, n_rounds):
+    def __init__(self, d, n_attn):
         super(SimpleAttentionSat, self).__init__()
         self.example_input_array = (torch.zeros(20, 35), torch.tensor(1))  # n_lits * n_clauses
+
+        self.d = d
 
         self.proj_lit = torch.nn.Parameter(torch.empty([1, d]))
         self.proj_cls = torch.nn.Parameter(torch.empty([1, d]))
 
-        self.lit_attn = torch.nn.MultiheadAttention(embed_dim=d, num_heads=4)
-        self.cls_attn = torch.nn.MultiheadAttention(embed_dim=d, num_heads=4)
+        self.lin1 = MLP(d, [d, d, d])
+        self.lin2 = MLP(d, [d, d, d])
 
-        # self.lit_attn = torch.nn.ModuleList([torch.nn.MultiheadAttention(embed_dim=d, num_heads=4) for _ in range(n_attn)])
-        # self.cls_attn = torch.nn.ModuleList([torch.nn.MultiheadAttention(embed_dim=d, num_heads=4) for _ in range(n_attn)])
+        # self.lit_attn = torch.nn.MultiheadAttention(embed_dim=d, num_heads=4)
+        # self.cls_attn = torch.nn.MultiheadAttention(embed_dim=d, num_heads=4)
 
-        self.decode_1 = torch.nn.Linear(d, 1)
+        self.lit_attn = torch.nn.ModuleList([torch.nn.MultiheadAttention(embed_dim=d, num_heads=8, dropout=0.1, add_bias_kv=True) for _ in range(n_attn)])
+        self.cls_attn = torch.nn.ModuleList([torch.nn.MultiheadAttention(embed_dim=d, num_heads=8, dropout=0.1, add_bias_kv=True) for _ in range(n_attn)])
+
+        self.decode1 = torch.nn.Linear(d, d)
+        self.activation1 = torch.nn.Sigmoid()
+        self.decode2 = torch.nn.Linear(d, 1)
+        self.activation2 = torch.nn.Tanh()
         # self.decode_2 = torch.nn.Linear(int(math.sqrt(d)), 1)
 
-        self.n_rounds = n_rounds
+        # self.n_rounds = n_rounds
 
         self._init_weight()
 
@@ -32,20 +40,51 @@ class SimpleAttentionSat(pl.LightningModule):
         self.train_accuracy = pl.metrics.Accuracy()
 
     def _init_weight(self):
-        torch.nn.init.xavier_uniform_(self.proj_lit)
-        torch.nn.init.xavier_uniform_(self.proj_cls)
+        torch.nn.init.normal_(self.proj_lit)
+        torch.nn.init.normal_(self.proj_cls)
+        torch.nn.init.xavier_uniform_(self.decode1.weight)
+        torch.nn.init.normal_(self.decode1.bias)
+        torch.nn.init.xavier_uniform_(self.decode2.weight)
+        torch.nn.init.zeros_(self.decode2.bias)
+        # torch.nn.init.zeros_(self.lin1.bias)
+        # torch.nn.init.zeros_(self.lin2.bias)
 
     def forward(self, x, n_batches):
         n_lits, n_clauses = x.size()
 
-        lit_msg = (x @ self.proj_lit.repeat([n_clauses, 1])).unsqueeze(1)  # n_lits * 1 * d
-        cls_msg = (x.t() @ self.proj_cls.repeat([n_lits, 1])).unsqueeze(1)   # n_clauses * 1 * d
+        # lit_msg = (x @ (self.proj_lit/math.sqrt(self.d)).repeat([n_clauses, 1])).unsqueeze(1)  # n_lits * 1 * d
+        # cls_msg = (x.t() @ (self.proj_cls/math.sqrt(self.d)).repeat([n_lits, 1])).unsqueeze(1)   # n_clauses * 1 * d
+        lit_init = (self.proj_lit/math.sqrt(self.d)).repeat([n_clauses, 1])  # n_clauses * d
+        cls_init = (self.proj_cls/math.sqrt(self.d)).repeat([n_lits, 1])     # n_lits * d
 
-        for _ in range(self.n_rounds):
-            lit_attn_msg, _ = self.cls_attn(lit_msg, cls_msg, cls_msg)  # n_lits * 1 * d, ?
-            flipped_lit_attn_msg = torch.cat([lit_msg[n_lits // 2:n_lits, :, :], lit_msg[0:n_lits // 2, :, :]], 0)
-            combined_lit_attn_msg = torch.cat([lit_msg, flipped_lit_attn_msg], 0) # 2n_lits * 1 * d
-            cls_msg, _ = self.lit_attn(cls_msg, combined_lit_attn_msg, combined_lit_attn_msg)  # n_clauses * 1 * d, ?
+        lit_msg = (x @ self.lin1(lit_init)).unsqueeze(1)      # n_lits * 1 * d
+        cls_msg = (x.t() @ self.lin2(cls_init)).unsqueeze(1)  # n_clauses * 1 * d
+
+        # print(lit_msg.squeeze())
+
+        # for _ in range(self.n_rounds):
+        #     lit_msg, _ = self.cls_attn(lit_msg, cls_msg, cls_msg)  # n_lits * 1 * d, ?
+        #     flipped_lit_attn_msg = torch.cat([lit_msg[n_lits // 2:n_lits, :, :], lit_msg[0:n_lits // 2, :, :]], 0)
+        #     combined_lit_attn_msg = torch.cat([lit_msg, flipped_lit_attn_msg], 0) # 2n_lits * 1 * d
+        #     cls_msg, _ = self.lit_attn(cls_msg, combined_lit_attn_msg, combined_lit_attn_msg)  # n_clauses * 1 * d, ?
+
+        for _ in range(1):
+            for attn_layer in self.lit_attn:
+                lit_msg = (x @ self.lin1(lit_init)).unsqueeze(1)
+                # print(lit_msg.squeeze())
+                lit_msg, _ = attn_layer(lit_msg, cls_msg, cls_msg)  # n_lits * 1 * d, ?
+                # print(1)
+
+            # print(lit_msg.squeeze())
+
+            for attn_layer in self.cls_attn:
+                flipped_lit_attn_msg = torch.cat([lit_msg[n_lits // 2:n_lits, :, :], lit_msg[0:n_lits // 2, :, :]], 0)
+                combined_lit_attn_msg = torch.cat([lit_msg, flipped_lit_attn_msg], 0)  # 2n_lits * 1 * d
+                cls_msg = (x.t() @ self.lin2(cls_init)).unsqueeze(1)
+                cls_msg, _ = attn_layer(cls_msg, combined_lit_attn_msg, combined_lit_attn_msg)  # n_clauses * 1 * d, ?
+                # print(combined_lit_attn_msg.squeeze())
+        # print(list(self.lin2.parameters()))
+        # print(cls_msg.squeeze())
 
         # lit_attn_msg = lit_msg
         # for attn_layer in self.lit_attn:
@@ -56,9 +95,9 @@ class SimpleAttentionSat(pl.LightningModule):
         # for attn_layer in self.cls_attn:
         #     cls_attn_msg, _ = attn_layer(cls_attn_msg, cls_attn_msg, cls_attn_msg)  # 1 * n_clauses * d, ?
 
-        inter_decoded_msg = self.decode_1(cls_msg.squeeze())
+        inter_decoded_msg = self.decode2(self.activation1(self.decode1(cls_msg.squeeze())))
         # final_msg = self.decode_2(inter_decoded_msg)
-
+        print(torch.mean(inter_decoded_msg, 0))
         return torch.mean(inter_decoded_msg, 0)
 
     def training_step(self, batch, batch_idx):
@@ -108,5 +147,5 @@ class SimpleAttentionSat(pl.LightningModule):
         return acc
 
     def configure_optimizers(self):
-        return torch.optim.SGD(self.parameters(), lr=1e-6)
-        # return torch.optim.Adam(self.parameters(), lr=1e-5, weight_decay=1e-10)
+        # return torch.optim.SGD(self.parameters(), lr=1e-6)
+        return torch.optim.Adam(self.parameters(), lr=1e-3, weight_decay=1e-10)

@@ -13,8 +13,8 @@ sys.path.append("utils")
 run_dir = os.path.join('run', str(int(time.time())))
 os.makedirs(run_dir)
 
-model = NeuroSAT(128, 3, 3, 16)
-# model = SimpleAttentionSat(128, 16)
+# model = NeuroSAT(128, 3, 3, 16)
+model = SimpleAttentionSat(16, 1)
 
 logger = TensorBoardLogger(
     save_dir=run_dir,
@@ -35,7 +35,7 @@ trainer = pl.Trainer(
     callbacks=[progress_bar]
 )
 
-datamodule = CnfDataModule("data", n_pairs=2000, one=True, max_nodes_per_batch=10000, min_n=10, max_n=40)
+datamodule = CnfDataModule("data", n_pairs=2000, one=True, max_nodes_per_batch=10000, min_n=5, max_n=10)
 trainer.fit(model, datamodule=datamodule)
 
 # TODO: Save run config
