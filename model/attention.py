@@ -5,32 +5,38 @@ import torch
 from pytorch_lightning.metrics import functional as FM
 
 from model import MLP, LayerNormBasicLSTMCell, compute_loss
+from .layers import GraphAttentionLayer
 
+
+class SublayerConnection(torch.nn.Module):
+    def __init__(self, d, sublayer):
+        super(SublayerConnection, self).__init__()
+        self.norm = torch.nn.LayerNorm(d)
+        self.dropout = torch.nn.Dropout(0.1)
+
+    def forward(self, x, sublayer):
+        return x + self.dropout(sublayer(self.norm(x)))
 
 class SimpleAttentionSat(pl.LightningModule):
     def __init__(self, d, n_attn):
         super(SimpleAttentionSat, self).__init__()
-        self.example_input_array = (torch.zeros(20, 35), torch.tensor(1))  # n_lits * n_clauses
+        # self.example_input_array = (torch.zeros(20, 35), torch.tensor(1))  # n_lits * n_clauses
 
         self.d = d
 
         self.proj_lit = torch.nn.Parameter(torch.empty([1, d]))
         self.proj_cls = torch.nn.Parameter(torch.empty([1, d]))
 
-        self.lin1 = MLP(d, [d, d, d])
-        self.lin2 = MLP(d, [d, d, d])
+        self.proj1 = MLP(d, [d, d, d])
+        self.proj2 = MLP(d, [d, d, d])
 
-        # self.lit_attn = torch.nn.MultiheadAttention(embed_dim=d, num_heads=4)
-        # self.cls_attn = torch.nn.MultiheadAttention(embed_dim=d, num_heads=4)
+        self.adj_init = torch.nn.Parameter(torch.empty([1, d]))
+        self.adj_proj = MLP(d, [d, d, d])
 
-        self.lit_attn = torch.nn.ModuleList([torch.nn.MultiheadAttention(embed_dim=d, num_heads=8, dropout=0.1, add_bias_kv=True) for _ in range(n_attn)])
-        self.cls_attn = torch.nn.ModuleList([torch.nn.MultiheadAttention(embed_dim=d, num_heads=8, dropout=0.1, add_bias_kv=True) for _ in range(n_attn)])
+        self.adj_gat = torch.nn.ModuleList([GraphAttentionLayer(d, d, 0.1, 0.1) for _ in range(6)])
 
-        self.decode1 = torch.nn.Linear(d, d)
-        self.activation1 = torch.nn.Sigmoid()
-        self.decode2 = torch.nn.Linear(d, 1)
-        self.activation2 = torch.nn.Tanh()
-        # self.decode_2 = torch.nn.Linear(int(math.sqrt(d)), 1)
+        self.decode = MLP(d, [d, d, 1])
+        self.vote_bias = torch.nn.Parameter(torch.empty([]))
 
         # self.n_rounds = n_rounds
 
@@ -40,69 +46,43 @@ class SimpleAttentionSat(pl.LightningModule):
         self.train_accuracy = pl.metrics.Accuracy()
 
     def _init_weight(self):
-        torch.nn.init.normal_(self.proj_lit)
-        torch.nn.init.normal_(self.proj_cls)
-        torch.nn.init.xavier_uniform_(self.decode1.weight)
-        torch.nn.init.normal_(self.decode1.bias)
-        torch.nn.init.xavier_uniform_(self.decode2.weight)
-        torch.nn.init.zeros_(self.decode2.bias)
-        # torch.nn.init.zeros_(self.lin1.bias)
-        # torch.nn.init.zeros_(self.lin2.bias)
+        torch.nn.init.normal_(self.adj_init)
+        torch.nn.init.xavier_uniform_(self.proj_lit)
+        torch.nn.init.xavier_uniform_(self.proj_cls)
+        torch.nn.init.zeros_(self.vote_bias)
 
-    def forward(self, x, n_batches):
-        n_lits, n_clauses = x.size()
+    def forward(self, A, n_lits, n_clauses, n_batches):
+        N, _ = A.size() # where N = n_literals + n_clauses
+        B = A[:n_lits,n_lits:] # where B is n_lits * n_clauses
 
-        # lit_msg = (x @ (self.proj_lit/math.sqrt(self.d)).repeat([n_clauses, 1])).unsqueeze(1)  # n_lits * 1 * d
-        # cls_msg = (x.t() @ (self.proj_cls/math.sqrt(self.d)).repeat([n_lits, 1])).unsqueeze(1)   # n_clauses * 1 * d
-        lit_init = (self.proj_lit/math.sqrt(self.d)).repeat([n_clauses, 1])  # n_clauses * d
-        cls_init = (self.proj_cls/math.sqrt(self.d)).repeat([n_lits, 1])     # n_lits * d
+        lit_init = B @ self.proj1((self.proj_lit / math.sqrt(self.d)).repeat([n_clauses, 1]))  # n_clauses * d
+        cls_init = B.t() @ self.proj2((self.proj_cls / math.sqrt(self.d)).repeat([n_lits, 1]))  # n_lits * d
+        x_emb = torch.cat([lit_init, cls_init], 0)
 
-        lit_msg = (x @ self.lin1(lit_init)).unsqueeze(1)      # n_lits * 1 * d
-        cls_msg = (x.t() @ self.lin2(cls_init)).unsqueeze(1)  # n_clauses * 1 * d
+        for gat in self.adj_gat:
+            x_emb = gat(x_emb, A)
 
-        # print(lit_msg.squeeze())
+        # attn = torch.cat([a(x_emb, A) for a in self.adj_gat])
 
-        # for _ in range(self.n_rounds):
-        #     lit_msg, _ = self.cls_attn(lit_msg, cls_msg, cls_msg)  # n_lits * 1 * d, ?
-        #     flipped_lit_attn_msg = torch.cat([lit_msg[n_lits // 2:n_lits, :, :], lit_msg[0:n_lits // 2, :, :]], 0)
-        #     combined_lit_attn_msg = torch.cat([lit_msg, flipped_lit_attn_msg], 0) # 2n_lits * 1 * d
-        #     cls_msg, _ = self.lit_attn(cls_msg, combined_lit_attn_msg, combined_lit_attn_msg)  # n_clauses * 1 * d, ?
+        # for _ in range(1):
+        #     cls = (x.t() @ self.lin2(lit_msg.squeeze())).unsqueeze(1)  # n_clauses * 1 * d
+        #     cls_n = self.cls_norm(cls)
+        #     lit = (x @ self.lin1(cls_msg.squeeze())).unsqueeze(1)  # n_lits * 1 * d
+        #     lit_n = self.lit_norm(lit)
+        #
+        #     lit_msg, _ = self.cls_attn(lit, cls, cls)  # n_lits * 1 * d
+        #     lit_msg = self.lit_drop(lit_n) + lit
+        #     cls_msg, _ = self.lit_attn(cls, lit_msg, lit_msg)  # n_clauses * 1 * d
+        #     cls_msg = self.cls_drop(cls_n) + cls
 
-        for _ in range(8):
-            for attn_layer in self.lit_attn:
-                lit_msg = (x @ self.lin1(lit_init)).unsqueeze(1)
-                # print(lit_msg.squeeze())
-                lit_msg, _ = attn_layer(lit_msg, cls_msg, cls_msg)  # n_lits * 1 * d, ?
-                # print(1)
-
-            # print(lit_msg.squeeze())
-
-            for attn_layer in self.cls_attn:
-                flipped_lit_attn_msg = torch.cat([lit_msg[n_lits // 2:n_lits, :, :], lit_msg[0:n_lits // 2, :, :]], 0)
-                combined_lit_attn_msg = torch.cat([lit_msg, flipped_lit_attn_msg], 0)  # 2n_lits * 1 * d
-                cls_msg = (x.t() @ self.lin2(cls_init)).unsqueeze(1)
-                cls_msg, _ = attn_layer(cls_msg, combined_lit_attn_msg, combined_lit_attn_msg)  # n_clauses * 1 * d, ?
-                # print(combined_lit_attn_msg.squeeze())
-        # print(list(self.lin2.parameters()))
-        # print(cls_msg.squeeze())
-
-        # lit_attn_msg = lit_msg
-        # for attn_layer in self.lit_attn:
-        #     lit_attn_msg, _ = attn_layer(lit_attn_msg, lit_attn_msg, lit_attn_msg)  # 1 * n_lits * d, ?
-        # flipped_lit_attn_msg = torch.cat([cls_attn_msg[:, n_lits//2:n_lits, :], cls_attn_msg[:, 0:n_lits//2, :]], 1)
-
-        # cls_attn_msg = cls_msg
-        # for attn_layer in self.cls_attn:
-        #     cls_attn_msg, _ = attn_layer(cls_attn_msg, cls_attn_msg, cls_attn_msg)  # 1 * n_clauses * d, ?
-
-        inter_decoded_msg = self.decode2(self.activation1(self.decode1(cls_msg.squeeze())))
-        # final_msg = self.decode_2(inter_decoded_msg)
-        print(torch.mean(inter_decoded_msg, 0))
-        return torch.mean(inter_decoded_msg, 0)
+        out = self.decode(x_emb)
+        ret = torch.mean(out, 0) + self.vote_bias
+        print(ret)
+        return ret
 
     def training_step(self, batch, batch_idx):
-        x, y = batch
-        outputs = self(x.float(), n_batches=len(y))
+        A, n_lits, n_clauses, y = batch
+        outputs = self(A.float(), n_lits, n_clauses, n_batches=len(y))
         torch.nn.utils.clip_grad_norm_(self.parameters(), 0.5)
         loss = compute_loss(outputs, y, self.parameters())
         self.log_dict(
@@ -117,8 +97,8 @@ class SimpleAttentionSat(pl.LightningModule):
         return loss
 
     def validation_step(self, batch, batch_idx):
-        x, y = batch
-        outputs = self(x.float(), n_batches=len(y))
+        A, n_lits, n_clauses, y = batch
+        outputs = self(A.float(), n_lits, n_clauses, n_batches=len(y))
         loss = compute_loss(outputs, y, self.parameters())
         acc = FM.accuracy(outputs > 0, y)
         self.log_dict(
@@ -133,8 +113,8 @@ class SimpleAttentionSat(pl.LightningModule):
         return acc
 
     def test_step(self, batch, batch_idx):
-        x, y = batch
-        outputs = self(x.float(), n_batches=len(y))
+        A, n_lits, n_clauses, y = batch
+        outputs = self(A.float(), n_lits, n_clauses, n_batches=len(y))
         acc = FM.accuracy(outputs > 0, y)
         self.log_dict(
             {
@@ -147,5 +127,5 @@ class SimpleAttentionSat(pl.LightningModule):
         return acc
 
     def configure_optimizers(self):
-        # return torch.optim.SGD(self.parameters(), lr=1e-6)
-        return torch.optim.Adam(self.parameters(), lr=1e-3, weight_decay=1e-10)
+        # return torch.optim.SGD(self.parameters(), lr=1e-5)
+        return torch.optim.Adam(self.parameters(), lr=1e-5, weight_decay=1e-9)

@@ -432,4 +432,13 @@ class CnfDataModule(pl.LightningDataModule):
         y = list()
         for i in all_is_sat:
             y.append(float(i))
-        return torch.tensor(x), torch.tensor(y)
+
+        xt = x.T
+        z1 = np.zeros([x.shape[0], x.shape[0]])
+        z2 = np.zeros([x.shape[1], x.shape[1]])
+
+        upper = np.concatenate([z1, x], 1)
+        lower = np.concatenate([xt, z2], 1)
+        adj = np.concatenate([upper, lower], 0)
+
+        return torch.tensor(adj), x.shape[0], x.shape[1], torch.tensor(y)
