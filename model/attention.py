@@ -2,43 +2,83 @@ import math
 
 import pytorch_lightning as pl
 import torch
+import torch_geometric as pyg
 from pytorch_lightning.metrics import functional as FM
+import matplotlib.pyplot as plt
 
 from model import MLP, LayerNormBasicLSTMCell, compute_loss
 from .layers import GraphAttentionLayer
 
 
-class SublayerConnection(torch.nn.Module):
-    def __init__(self, d, sublayer):
-        super(SublayerConnection, self).__init__()
+class MHASublayerConnection(torch.nn.Module):
+    def __init__(self, d):
+        super(MHASublayerConnection, self).__init__()
         self.norm = torch.nn.LayerNorm(d)
         self.dropout = torch.nn.Dropout(0.1)
+        self.mha = torch.nn.MultiheadAttention(d, 8)
 
-    def forward(self, x, sublayer):
-        return x + self.dropout(sublayer(self.norm(x)))
+    def forward(self, x):
+        return x + self.dropout(self.mha(self.norm(x), self.norm(x), self.norm(x))[0])
+
+class GCN(torch.nn.Module):
+    def __init__(self, input_dim, feature_dim, hidden_dim, output_dim,
+                 feature_pre=True, layer_num=8, dropout=True, **kwargs):
+        super(GCN, self).__init__()
+        self.feature_pre = feature_pre
+        self.layer_num = layer_num
+        self.dropout = dropout
+        if feature_pre:
+            self.linear_pre = torch.nn.Linear(input_dim, feature_dim)
+            self.conv_first = pyg.nn.GATConv(feature_dim, hidden_dim)
+        else:
+            self.conv_first = pyg.nn.GATConv(input_dim, hidden_dim)
+        self.conv_hidden = torch.nn.ModuleList([pyg.nn.GATConv(hidden_dim, hidden_dim) for _ in range(layer_num - 2)])
+        self.conv_out = pyg.nn.GATConv(hidden_dim, output_dim)
+
+    def forward(self, x, edge_index):
+        if self.feature_pre:
+            x = self.linear_pre(x)
+        x = self.conv_first(x, edge_index)
+        x = torch.nn.functional.relu(x)
+        if self.dropout:
+            x = torch.nn.functional.dropout(x, training=self.training)
+        for i in range(self.layer_num-2):
+            x = self.conv_hidden[i](x, edge_index)
+            x = torch.nn.functional.relu(x)
+            if self.dropout:
+                x = torch.nn.functional.dropout(x, training=self.training)
+        x = self.conv_out(x, edge_index)
+        x = torch.nn.functional.normalize(x, p=2, dim=-1)
+        return x
+
+class AttLayer(torch.nn.Module):
+    def __init__(self, d_in, d_h, d_out):
+        super(AttLayer, self).__init__()
+        self.fc = torch.nn.Linear(d_in, d_h)
+        self.dropout = torch.nn.Dropout(0.2)
+        self.attn = pyg.nn.TransformerConv(d_h, d_out, dropout=0.2, beta=False)
+
+    def forward(self, x, edge_index):
+        x = self.fc(x)
+        x = torch.nn.functional.relu(x)
+        x = self.dropout(x)
+        x = self.attn(x, edge_index)
+        return x
 
 class SimpleAttentionSat(pl.LightningModule):
-    def __init__(self, d, n_attn):
+    def __init__(self, d):
         super(SimpleAttentionSat, self).__init__()
         # self.example_input_array = (torch.zeros(20, 35), torch.tensor(1))  # n_lits * n_clauses
 
         self.d = d
 
-        self.proj_lit = torch.nn.Parameter(torch.empty([1, d]))
-        self.proj_cls = torch.nn.Parameter(torch.empty([1, d]))
+        self.attn = torch.nn.ModuleList(
+            [AttLayer(3, d, d)] +
+            [AttLayer(d, d, d) for _ in range(7)]
+        )
 
-        self.proj1 = MLP(d, [d, d, d])
-        self.proj2 = MLP(d, [d, d, d])
-
-        self.adj_init = torch.nn.Parameter(torch.empty([1, d]))
-        self.adj_proj = MLP(d, [d, d, d])
-
-        self.adj_gat = torch.nn.ModuleList([GraphAttentionLayer(d, d, 0.1, 0.1) for _ in range(6)])
-
-        self.decode = MLP(d, [d, d, 1])
-        self.vote_bias = torch.nn.Parameter(torch.empty([]))
-
-        # self.n_rounds = n_rounds
+        self.fc4 = torch.nn.Linear(d, 1)
+        self.dropout4 = torch.nn.Dropout(0.2)
 
         self._init_weight()
 
@@ -46,45 +86,26 @@ class SimpleAttentionSat(pl.LightningModule):
         self.train_accuracy = pl.metrics.Accuracy()
 
     def _init_weight(self):
-        torch.nn.init.normal_(self.adj_init)
-        torch.nn.init.xavier_uniform_(self.proj_lit)
-        torch.nn.init.xavier_uniform_(self.proj_cls)
-        torch.nn.init.zeros_(self.vote_bias)
+        pass
+        # torch.nn.init.zeros_(self.vote_bias)64
 
-    def forward(self, A, n_lits, n_clauses, n_batches):
-        N, _ = A.size() # where N = n_literals + n_clauses
-        B = A[:n_lits,n_lits:] # where B is n_lits * n_clauses
+    def forward(self, x, edge_index, f, b, n_lits, n_batches):
 
-        lit_init = B @ self.proj1((self.proj_lit / math.sqrt(self.d)).repeat([n_clauses, 1]))  # n_clauses * d
-        cls_init = B.t() @ self.proj2((self.proj_cls / math.sqrt(self.d)).repeat([n_lits, 1]))  # n_lits * d
-        x_emb = torch.cat([lit_init, cls_init], 0)
-
-        for gat in self.adj_gat:
-            x_emb = gat(x_emb, A)
-
-        # attn = torch.cat([a(x_emb, A) for a in self.adj_gat])
-
-        # for _ in range(1):
-        #     cls = (x.t() @ self.lin2(lit_msg.squeeze())).unsqueeze(1)  # n_clauses * 1 * d
-        #     cls_n = self.cls_norm(cls)
-        #     lit = (x @ self.lin1(cls_msg.squeeze())).unsqueeze(1)  # n_lits * 1 * d
-        #     lit_n = self.lit_norm(lit)
-        #
-        #     lit_msg, _ = self.cls_attn(lit, cls, cls)  # n_lits * 1 * d
-        #     lit_msg = self.lit_drop(lit_n) + lit
-        #     cls_msg, _ = self.lit_attn(cls, lit_msg, lit_msg)  # n_clauses * 1 * d
-        #     cls_msg = self.cls_drop(cls_n) + cls
-
-        out = self.decode(x_emb)
-        ret = torch.mean(out, 0) + self.vote_bias
-        print(ret)
-        return ret
+        for a in self.attn:
+            x = a(x, edge_index)
+        x = self.fc4(x)
+        logits = torch.mean(x, 0)
+        print(logits)
+        return logits.view(-1)
 
     def training_step(self, batch, batch_idx):
-        A, n_lits, n_clauses, y = batch
-        outputs = self(A.float(), n_lits, n_clauses, n_batches=len(y))
-        torch.nn.utils.clip_grad_norm_(self.parameters(), 0.5)
-        loss = compute_loss(outputs, y, self.parameters())
+        x, edge_index, f, b, n_lits, y = batch
+        outputs = self(x.float(), edge_index, f, b, n_lits, n_batches=len(y))
+        # torch.nn.utils.clip_grad_norm_(self.parameters(), 0.5)
+        # loss = compute_loss(outputs, y, self.parameters())
+        # print(outputs.shape)
+        # print(y.shape)
+        loss = torch.nn.functional.binary_cross_entropy_with_logits(outputs, y.float())
         self.log_dict(
             {
                 "train_loss": loss.item(),
@@ -94,11 +115,13 @@ class SimpleAttentionSat(pl.LightningModule):
             on_step=True,
             on_epoch=True,
         )
+        # plt.imshow(votes.detach().numpy(), cmap="bwr")
+        # plt.savefig("votes/{}.jpg".format(batch_idx))
         return loss
 
     def validation_step(self, batch, batch_idx):
-        A, n_lits, n_clauses, y = batch
-        outputs = self(A.float(), n_lits, n_clauses, n_batches=len(y))
+        x, edge_index, f, b, n_lits, y = batch
+        outputs = self(x.float(), edge_index, f, b, n_lits, n_batches=len(y))
         loss = compute_loss(outputs, y, self.parameters())
         acc = FM.accuracy(outputs > 0, y)
         self.log_dict(
@@ -113,8 +136,8 @@ class SimpleAttentionSat(pl.LightningModule):
         return acc
 
     def test_step(self, batch, batch_idx):
-        A, n_lits, n_clauses, y = batch
-        outputs = self(A.float(), n_lits, n_clauses, n_batches=len(y))
+        x, edge_index, f, b, n_lits, y = batch
+        outputs = self(x.float(), edge_index, f, b, n_lits, n_batches=len(y))
         acc = FM.accuracy(outputs > 0, y)
         self.log_dict(
             {
@@ -127,5 +150,6 @@ class SimpleAttentionSat(pl.LightningModule):
         return acc
 
     def configure_optimizers(self):
+        # return torch.optim.RMSprop(self.parameters(), lr=1e-5)
         # return torch.optim.SGD(self.parameters(), lr=1e-5)
-        return torch.optim.Adam(self.parameters(), lr=1e-5, weight_decay=1e-9)
+        return torch.optim.Adam(self.parameters(), lr=5e-3)

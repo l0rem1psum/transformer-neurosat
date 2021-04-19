@@ -16,8 +16,8 @@ class MLP(torch.nn.Module):
         d_in = self.d_in
         for d_out in self.d_outs:
             l = torch.nn.Linear(d_in, d_out)
-            torch.nn.init.xavier_uniform_(l.weight)
-            torch.nn.init.zeros_(l.bias)
+            # torch.nn.init.zeros_(l.weight)
+            # torch.nn.init.zeros_(l.bias)
             self.linears.append(l)
             d_in = d_out
 

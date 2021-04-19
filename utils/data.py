@@ -8,6 +8,7 @@ from typing import List, Tuple
 import numpy as np
 import pytorch_lightning as pl
 import torch
+import torch_geometric as pyg
 from tqdm import tqdm
 
 sys.path.append(os.path.abspath('.'))
@@ -433,12 +434,200 @@ class CnfDataModule(pl.LightningDataModule):
         for i in all_is_sat:
             y.append(float(i))
 
-        xt = x.T
+        # Make zero matrics:
         z1 = np.zeros([x.shape[0], x.shape[0]])
-        z2 = np.zeros([x.shape[1], x.shape[1]])
+        z2 = np.zeros([x.shape[0], x.shape[1]])
+        z3 = np.zeros([x.shape[1], x.shape[0]])
+        z4 = np.zeros([x.shape[1], x.shape[1]])
 
-        upper = np.concatenate([z1, x], 1)
-        lower = np.concatenate([xt, z2], 1)
-        adj = np.concatenate([upper, lower], 0)
+        # Make adjacency matrix of (n_lits + n_clauses) * (n_lits + n_clauses):
+        adj_upper = np.concatenate([z1, x], 1)
+        adj_lower = np.concatenate([x.T, z4], 1)
+        adj = np.concatenate([adj_upper, adj_lower], 0)
 
-        return torch.tensor(adj), x.shape[0], x.shape[1], torch.tensor(y)
+        # Make input feature of SAT instance based on type: positive/negative literal, clause (for LCG)
+        X = np.zeros([x.shape[0] + x.shape[1], 3])
+        X[0:x.shape[0] // 2, 0] = 1
+        X[x.shape[0] // 2:x.shape[0], 1] = 1
+        X[x.shape[0]:, 2] = 1
+
+        # For LIG:
+        # X = np.zeros([x.shape[0], 2])
+        # X[:x.shape[0] // 2, 0] = 1
+        # X[x.shape[0] // 2:, 1] = -1
+
+        # Make f
+        f_upper = np.concatenate([z1, x], 1)
+        f_lower = np.concatenate([z3, z4], 1)
+        f = np.concatenate([f_upper, f_lower], 0)
+
+        # Make b
+        identity = np.identity(x.shape[0])
+        flipped_identity = np.concatenate([identity[x.shape[0] // 2:], identity[:x.shape[0] // 2]], 0)
+
+        b_upper = np.concatenate([flipped_identity, z2], 1)
+        b_lower = np.concatenate([x.T, z4], 1)
+        b = np.concatenate([b_upper, b_lower], 0)
+
+        # return torch.tensor(X), torch.tensor(adj_to_coo(adj)), torch.tensor(adj_to_coo(f)), torch.tensor(adj_to_coo(b)), x.shape[0], torch.tensor(y)
+        # print(adj_to_coo(x))
+        # print(adj_to_coo(x.T))
+        return torch.tensor(x), torch.tensor(adj_to_coo(x)), torch.tensor(adj_to_coo(x.T)), torch.tensor(y)
+
+def adj_to_coo(adj):
+    r, c = [], []
+    for (x, y), v in np.ndenumerate(adj):
+        if v == 1:
+            r.append(x)
+            c.append(y)
+    return np.array([r, c])
+
+def b_to_lig(b):
+    edge_index = []
+    for c in b.T:
+        # c is a single clause
+        lit_idx = np.where(c == 1)
+        edge_index.append(np.array(np.meshgrid(lit_idx, lit_idx)).T.reshape(-1, 2))
+    return pyg.utils.remove_self_loops(np.concatenate(edge_index, 0).T)[0]
+
+def m_to_a1(adj):
+    i, j = [], []
+    n_lits, _ = adj.shape
+    for (x, y), v in np.ndenumerate(adj):
+        if v == 1:
+            i.append(x)
+            j.append(y)
+    return np.array([i, j])
+
+def m_to_a2(adj):
+    i, j = [], []
+    n_lits, _ = adj.shape
+    for (x, y), v in np.ndenumerate(adj):
+        if v == 1:
+            i.append(y)
+            j.append(x)
+    for a in range(n_lits//2):
+        i.append(a)
+        j.append(n_lits//2 + a)
+    for a in range(n_lits//2):
+        i.append(n_lits//2 + a)
+        j.append(a)
+    return np.array([i, j])
+
+class KSatGenerator:
+    def __init__(self, k=3, cv_ratio=5):
+        self.k = k
+        self.cv_ratio = cv_ratio
+
+    @staticmethod
+    def _generate_one_clause(n_vars, k=3):
+        assert n_vars >= k, "n_vars must be greater than k"
+        vs = np.random.choice(n_vars, size=k, replace=False)
+        return [v + 1 if random.random() < 0.5 else -(v + 1) for v in vs]
+
+    @staticmethod
+    def generate_one_instance(n_vars, cv_ratio, is_sat):
+        min_n_cls = int(n_vars * cv_ratio) + 1
+        while True:
+            clauses = []
+            for _ in range(min_n_cls):
+                clauses.append(KSatGenerator._generate_one_clause(n_vars))
+
+            solver = minisolvers.MinisatSolver()
+            for _ in range(n_vars): solver.new_var(dvar=True)
+            for c in clauses: solver.add_clause(c)
+
+            result = solver.solve()
+            if result == is_sat:
+                return clauses
+
+class KSatDataset(torch.utils.data.Dataset):
+    def __init__(self, n_vars, cv_ratio, n_instances):
+        self.n_vars = n_vars
+        self.cv_ratio = cv_ratio
+        self.n_instances = n_instances
+        self.instances = KSatDataset.generate_n_instances(n_vars, cv_ratio, n_instances)
+        random.shuffle(self.instances)
+
+    @staticmethod
+    def generate_n_instances(n_vars, cv_ratio, n_instances):
+        instances = []
+        sat = n_instances // 2
+        unsat = n_instances - sat
+        for _ in tqdm(range(sat)):
+            instances.append((KSatGenerator.generate_one_instance(n_vars, cv_ratio, True), True))
+        for _ in tqdm(range(unsat)):
+            instances.append((KSatGenerator.generate_one_instance(n_vars, cv_ratio, False), False))
+        return instances
+
+    def __len__(self):
+        return self.n_instances
+
+    def __getitem__(self, idx) -> Tuple[List[List[int]], bool]:
+        return self.instances[idx]
+
+class KSatDataModule(pl.LightningDataModule):
+    def __init__(self):
+        pass
+
+    def prepare_data(self):
+        print("preparing data")
+
+    def setup(self):
+        print("setting up data")
+
+    def train_dataloader(self, *args, **kwargs) -> torch.utils.data.DataLoader:
+        ds = KSatDataset(5, 4, 1000)
+        return torch.utils.data.DataLoader(ds, batch_size=None, collate_fn=self.collate_fn)
+
+    @staticmethod
+    def collate_fn(sat_instance: Tuple[List[List[int]], bool]) -> torch.tensor:
+        n_vars = 10
+        n_lits = n_vars * 2
+        clauses, y = sat_instance
+        n_clauses = len(clauses)
+        bipartite = np.zeros([n_lits, n_clauses])
+        for i, clause in enumerate(clauses):
+            for literal in clause:
+                positive = literal > 0
+                if positive:
+                    bipartite[literal - 1, i] = 1
+                else:
+                    literal *= -1
+                    bipartite[n_vars + literal - 1, i] = 1
+
+        # Make input feature of SAT instance based on type: positive/negative literal, clause (for LCG)
+        x = np.zeros([n_lits + n_clauses, 3])
+        x[0:n_vars, 0] = 1
+        x[n_vars:n_lits, 1] = 1
+        x[n_lits:n_clauses, 2] = 1
+
+        # Make zero matrics:
+        z1 = 1e-7 * np.ones([n_lits, n_lits])
+        z2 = 1e-7 * np.ones([n_lits, n_clauses])
+        z3 = 1e-7 * np.ones([n_clauses, n_lits])
+        z4 = 1e-7 * np.ones([n_clauses, n_clauses])
+
+        # Make adjacency matrix of (n_lits + n_clauses) * (n_lits + n_clauses):
+        adj_upper = np.concatenate([z1, bipartite], 1)
+        adj_lower = np.concatenate([bipartite.T, z4], 1)
+        adj = np.concatenate([adj_upper, adj_lower], 0)
+        # add virtual node
+        # v = np.ones([n_lits + n_clauses, 1])
+        # h = np.ones([1, n_lits + n_clauses + 1])
+        # adj = np.concatenate([adj, v], 1)
+        # adj = np.concatenate([adj, h], 0)
+
+        # Make f
+        f_upper = np.concatenate([z1, bipartite], 1)
+        f_lower = np.concatenate([z3, z4], 1)
+        f = np.concatenate([f_upper, f_lower], 0)
+
+        # Make b
+        identity = np.identity(n_lits)
+        flipped_identity = np.concatenate([identity[n_vars:], identity[:n_vars]], 0)
+        b_upper = np.concatenate([flipped_identity, z2], 1)
+        b_lower = np.concatenate([bipartite.T, z4], 1)
+        b = np.concatenate([b_upper, b_lower], 0)
+
+        return torch.tensor(x), torch.tensor(adj_to_coo(adj)), torch.tensor(adj_to_coo(f)), torch.tensor(adj_to_coo(b)), n_lits, torch.tensor([int(y)])

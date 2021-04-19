@@ -9,4 +9,4 @@ def compute_loss(logits, labels, parameters):
     l2_cost = torch.zeros([])#.cuda()
     for p in parameters:
         l2_cost += torch.sum(p ** 2) / 2
-    return predict_cost + 1e-6 * l2_cost
+    return predict_cost + 1e-7 * l2_cost
